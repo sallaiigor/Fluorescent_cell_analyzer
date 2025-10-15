@@ -177,3 +177,11 @@ button:disabled {
 .download-btn:hover {
     background-color: #138496;
 }
+#analysisMode {
+    width: 100%;
+    padding: 8px;
+    margin-bottom: 20px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background-color: white;
+}
