@@ -8,14 +8,12 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <header>
-        <h1>Fluorescence Cell Analyzer Tool</h1>
-    </header>
+    <header><h1>Fluorescence Cell Analyzer Tool</h1></header>
     <main>
         <div class="controls">
             <div class="card">
                 <h2>1. Upload Tiled Image Folder</h2>
-                <p>Select the parent folder (e.g., 'output_tiles') containing your channel subfolders (e.g., 'DAPI', 'GFP').</p>
+                <p>Select the parent folder containing your channel subfolders (e.g., 'DAPI', 'GFP').</p>
                 <input type="file" id="imageUpload" webkitdirectory directory multiple>
                 <div id="uploadInfo"></div>
             </div>
@@ -23,31 +21,36 @@
             <div class="card">
                 <h2>2. Analysis Parameters</h2>
                 <div id="paramsContainer" class="hidden">
-                    <h3>Segmentation Channel</h3>
-                    <p>Select the channel for cell segmentation.</p>
-                    <select id="segmentationChannelSelect"></select>
-                    
-                    <div class="threshold-grid">
-                        <div>
-                            <label for="minArea">Min Area (pixels)</label>
-                            <input type="number" id="minArea" value="50">
-                        </div>
-                        <div>
-                            <label for="maxArea">Max Area (pixels)</label>
-                            <input type="number" id="maxArea" value="10000">
-                        </div>
-                        <div>
-                            <label for="minIntensity">Min Intensity (a.u.)</label>
-                            <input type="number" id="minIntensity" value="0">
-                        </div>
-                        <div>
-                            <label for="maxIntensity">Max Intensity (a.u.)</label>
-                            <input type="number" id="maxIntensity" value="65535">
-                        </div>
+                    <div>
+                        <label for="analysisMode"><strong>Analysis Mode</strong></label>
+                        <select id="analysisMode">
+                            <option value="quantify" selected>Multi-Channel Quantification</option>
+                            <option value="compare">Comparative Segmentation</option>
+                        </select>
                     </div>
-                    
-                    <h3>Background Selection (Optional)</h3>
-                    <p>Background is now calculated from the first tile automatically. Manual selection is optional.</p>
+
+                    <div id="quantify-options">
+                        <h3>Segmentation Channel</h3>
+                        <p>Select the primary channel for cell segmentation.</p>
+                        <select id="segmentationChannelSelect"></select>
+                        <h3>Background Selection</h3>
+                        <p>Click and drag on the first tile of the primary channel to select background.</p>
+                        <div class="tool-selector">
+                            <button class="tool-btn active" data-tool="rectangle">Rectangle</button>
+                            <button class="tool-btn" data-tool="circle">Circle</button>
+                            <button class="tool-btn" data-tool="lasso">Lasso</button>
+                        </div>
+                        <h3>Compensation Matrix</h3>
+                        <p>Define bleed-through between channels.</p>
+                        <div id="compMatrixContainer"></div>
+                    </div>
+
+                    <div class="threshold-grid">
+                        <div><label for="minArea">Min Area (pixels)</label><input type="number" id="minArea" value="50"></div>
+                        <div><label for="maxArea">Max Area (pixels)</label><input type="number" id="maxArea" value="10000"></div>
+                        <div><label for="minIntensity">Min Intensity (a.u.)</label><input type="number" id="minIntensity" value="0"></div>
+                        <div><label for="maxIntensity">Max Intensity (a.u.)</label><input type="number" id="maxIntensity" value="65535"></div>
+                    </div>
                 </div>
             </div>
 
@@ -71,7 +74,8 @@
                 <a id="downloadCsvBtn" class="download-btn" href="#">Download Data (CSV)</a>
                 <a id="downloadPlotsBtn" class="download-btn" href="#">Download All Plots (ZIP)</a>
             </div>
-            <div class="results-grid" id="resultsGrid"></div>
+            <div class="results-grid" id="resultsGrid">
+                </div>
         </div>
     </main>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
