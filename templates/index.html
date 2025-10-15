@@ -1,1 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluorescence Cell Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Fluorescence Cell Analyzer Tool</h1>
+    </header>
+    <main>
+        <div class="controls">
+            <div class="card">
+                <h2>1. Upload Tiled Image Folder</h2>
+                <p>Select the parent folder (e.g., 'output_tiles') containing your channel subfolders (e.g., 'DAPI', 'GFP').</p>
+                <input type="file" id="imageUpload" webkitdirectory directory multiple>
+                <div id="uploadInfo"></div>
+            </div>
 
+            <div class="card">
+                <h2>2. Analysis Parameters</h2>
+                <div id="paramsContainer" class="hidden">
+                    <h3>Segmentation Channel</h3>
+                    <p>Select the channel for cell segmentation.</p>
+                    <select id="segmentationChannelSelect"></select>
+                    
+                    <div class="threshold-grid">
+                        <div>
+                            <label for="minArea">Min Area (pixels)</label>
+                            <input type="number" id="minArea" value="50">
+                        </div>
+                        <div>
+                            <label for="maxArea">Max Area (pixels)</label>
+                            <input type="number" id="maxArea" value="10000">
+                        </div>
+                        <div>
+                            <label for="minIntensity">Min Intensity (a.u.)</label>
+                            <input type="number" id="minIntensity" value="0">
+                        </div>
+                        <div>
+                            <label for="maxIntensity">Max Intensity (a.u.)</label>
+                            <input type="number" id="maxIntensity" value="65535">
+                        </div>
+                    </div>
+                    
+                    <h3>Background Selection (Optional)</h3>
+                    <p>Background is now calculated from the first tile automatically. Manual selection is optional.</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>3. Analysis</h2>
+                <button id="analyzeBtn" disabled>Run Analysis</button>
+                <div id="progressContainer" class="hidden">
+                    <p><strong>Status:</strong> <span id="statusText">Starting...</span></p>
+                    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+                    <div class="time-info">
+                        <span>Elapsed: <span id="elapsedTime">0s</span></span>
+                        <span>Estimated: <span id="estimatedTime">~...</span></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="results" class="hidden">
+            <h2>Results</h2>
+            <div class="download-section">
+                <a id="downloadCsvBtn" class="download-btn" href="#">Download Data (CSV)</a>
+                <a id="downloadPlotsBtn" class="download-btn" href="#">Download All Plots (ZIP)</a>
+            </div>
+            <div class="results-grid" id="resultsGrid"></div>
+        </div>
+    </main>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
