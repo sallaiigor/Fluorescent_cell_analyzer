@@ -16,8 +16,7 @@ from threading import Thread
 import traceback
 
 app = Flask(__name__)
-# ÚJ SOR: A feltöltési limit megemelése
-app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB limit
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB feltöltési limit
 
 tasks = {}
 
@@ -26,26 +25,28 @@ tasks = {}
 def create_histogram(intensity_data, channel_order):
     plt.style.use('default')
     num_channels = len(channel_order)
-    if num_channels == 1:
+    if num_channels == 0:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.text(0.5, 0.5, 'No data to display', ha='center', va='center')
+    elif num_channels == 1:
         fig, axes = plt.subplots(1, 1, figsize=(5, 4))
         axes = [axes]
     else:
         fig, axes = plt.subplots(1, num_channels, figsize=(5 * num_channels, 4), sharey=True)
-    colors = ['#007bff', '#28a745', '#dc3545', '#ffc107']
-    for i, channel in enumerate(channel_order):
-        if intensity_data.get(channel):
-            axes[i].hist(intensity_data[channel], bins=25, color=colors[i % len(colors)], alpha=0.8)
-        axes[i].set_title(channel, fontsize=10)
-        axes[i].set_xlabel('Mean Intensity', fontsize=8)
-        axes[i].tick_params(axis='x', labelsize=7)
-        axes[i].tick_params(axis='y', labelsize=7)
-    axes[0].set_ylabel('Cell Count', fontsize=8)
-    fig.suptitle('Intensity Distribution per Channel', fontsize=12, fontweight='bold')
-    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-    img_bytes = io.BytesIO()
-    fig.savefig(img_bytes, format='png', dpi=300)
-    plt.close(fig)
-    img_bytes.seek(0)
+    
+    if num_channels > 0:
+        colors = ['#007bff', '#28a745', '#dc3545', '#ffc107']
+        for i, channel in enumerate(channel_order):
+            if intensity_data.get(channel):
+                axes[i].hist(intensity_data[channel], bins=25, color=colors[i % len(colors)], alpha=0.8)
+            axes[i].set_title(channel, fontsize=10)
+            axes[i].set_xlabel('Mean Intensity', fontsize=8)
+            axes[i].tick_params(axis='x', labelsize=7); axes[i].tick_params(axis='y', labelsize=7)
+        axes[0].set_ylabel('Cell Count', fontsize=8)
+        fig.suptitle('Intensity Distribution per Channel', fontsize=12, fontweight='bold')
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    img_bytes = io.BytesIO(); fig.savefig(img_bytes, format='png', dpi=300); plt.close(fig); img_bytes.seek(0)
     return img_bytes
 
 def create_boxplot(intensity_data, channel_order):
@@ -53,10 +54,12 @@ def create_boxplot(intensity_data, channel_order):
     normalized_data, valid_channels = [], []
     for channel in channel_order:
         if intensity_data.get(channel):
-            max_val = max(intensity_data[channel])
-            if max_val > 0:
-                normalized_data.append([val / max_val * 100 for val in intensity_data[channel]])
-                valid_channels.append(channel)
+            channel_data = intensity_data[channel]
+            if channel_data: # Check if list is not empty
+                max_val = max(channel_data)
+                if max_val > 0:
+                    normalized_data.append([val / max_val * 100 for val in channel_data])
+                    valid_channels.append(channel)
     
     fig, ax = plt.subplots(figsize=(8, 5))
     if not normalized_data:
@@ -93,102 +96,191 @@ def create_cell_count_plot(initial_count, final_count):
     fig.tight_layout(); img_bytes = io.BytesIO(); fig.savefig(img_bytes, format='png', dpi=300); plt.close(fig); img_bytes.seek(0)
     return img_bytes
 
-# --- FŐ ELEMZŐ LOGIKA ---
-def process_analysis_request(task_id, files_with_paths, thresholds):
+def create_channel_comparison_plot(results_dict):
+    plt.style.use('default'); fig, ax = plt.subplots(figsize=(8, 5))
+    channels = list(results_dict.keys())
+    counts = [res['count'] for res in results_dict.values()]
+    bars = ax.bar(channels, counts, color=['#007bff', '#28a745', '#dc3545', '#ffc107'])
+    ax.set_ylabel('Final Cell Count', fontsize=9)
+    ax.set_title('Comparative Cell Count per Channel', fontsize=12, fontweight='bold')
+    ax.bar_label(bars, padding=3, fontsize=8)
+    ax.tick_params(axis='x', labelsize=8, rotation=15)
+    if counts and max(counts) > 0: ax.set_ylim(top=max(counts) * 1.15)
+    fig.tight_layout(); img_bytes = io.BytesIO(); fig.savefig(img_bytes, format='png', dpi=300); plt.close(fig); img_bytes.seek(0)
+    return img_bytes
+
+def reconstruct_image(channels, channel_name, final_cell_df, masks_dict, tile_metadata):
+    if not channel_name in channels or not channels[channel_name]: return None
+    
+    max_x = max(t['x'] for t in channels[channel_name])
+    max_y = max(t['y'] for t in channels[channel_name])
+    full_width = max_x + tile_metadata['tile_size']
+    full_height = max_y + tile_metadata['tile_size']
+
+    reconstructed_image = np.zeros((full_height, full_width), dtype=np.uint8)
+    for tile in channels[channel_name]:
+        img_tile = cv2.imdecode(np.frombuffer(tile['data'], np.uint8), cv2.IMREAD_GRAYSCALE)
+        h, w = img_tile.shape
+        reconstructed_image[tile['y']:tile['y']+h, tile['x']:tile['x']+w] = img_tile
+    
+    overlay_img = cv2.cvtColor(reconstructed_image, cv2.COLOR_GRAY2BGR)
+    if not final_cell_df.empty:
+        for row in final_cell_df.itertuples():
+            cell_id, global_cx, global_cy = row.Cell_ID, row.Global_CX, row.Global_CY
+            
+            for tile_coord, mask_data in masks_dict.items():
+                if cell_id in mask_data['cell_map']:
+                    original_id = mask_data['cell_map'][cell_id]
+                    mask_on_tile = (mask_data['mask'] == original_id)
+                    
+                    full_mask = np.zeros((full_height, full_width), dtype=np.uint8)
+                    tile_y, tile_x = tile_coord
+                    h, w = mask_on_tile.shape
+                    full_mask[tile_y:tile_y+h, tile_x:tile_x+w] = mask_on_tile
+                    
+                    np.random.seed(cell_id)
+                    color = np.random.randint(50, 255, size=3).tolist()
+                    overlay_img[full_mask.astype(bool)] = color
+                    cv2.putText(overlay_img, str(cell_id), (global_cx - 10, global_cy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1, cv2.LINE_AA)
+                    break
+    
+    _, buffer = cv2.imencode('.png', overlay_img)
+    return buffer.tobytes()
+
+def run_quantification_mode(task_id, channels, tile_metadata, thresholds, bg_coords, comp_matrix):
+    seg_channel_name = thresholds['seg_channel']
+    if seg_channel_name not in channels: raise ValueError(f"Segmentation channel '{seg_channel_name}' not found.")
+    
+    all_cells_data, model, masks_dict = [], Cellpose(model_type='cyto', gpu=True), {}
+    total_tiles = len(channels[seg_channel_name])
+    
+    for i, tile in enumerate(sorted(channels[seg_channel_name], key=lambda t: (t['y'], t['x']))):
+        tasks[task_id]['status'] = f'Analyzing tile {i+1}/{total_tiles}...'; tasks[task_id]['progress'] = 10 + int(70 * (i / total_tiles))
+        
+        seg_image_raw = cv2.imdecode(np.frombuffer(tile['data'], np.uint8), cv2.IMREAD_GRAYSCALE)
+        masks, _, _, _ = model.eval(seg_image_raw, diameter=None, channels=[0,0])
+        
+        current_cell_map = {}
+        for cell_id_on_tile in np.unique(masks)[1:]:
+            cell_mask = (masks == cell_id_on_tile)
+            M = cv2.moments(cell_mask.astype(np.uint8))
+            if M["m00"] > 0:
+                local_cx, local_cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+                
+                o = tile_metadata.get('overlap', 0)
+                if not (tile['x'] > 0 and local_cx < o) and not (tile['y'] > 0 and local_cy < o):
+                    new_cell_id = len(all_cells_data) + 1
+                    cell_info = {'Cell_ID': new_cell_id, 'Global_CX': tile['x'] + local_cx, 'Global_CY': tile['y'] + local_cy, 'Area_pixels': int(np.sum(cell_mask))}
+                    for ch_name, ch_tiles in channels.items():
+                        corr_tile_data = next((t['data'] for t in ch_tiles if t['x'] == tile['x'] and t['y'] == tile['y']), None)
+                        if corr_tile_data:
+                            ch_img = cv2.imdecode(np.frombuffer(corr_tile_data, np.uint8), cv2.IMREAD_GRAYSCALE)
+                            cell_info[f'Mean_Intensity_{ch_name}'] = float(np.mean(ch_img[cell_mask]))
+                    current_cell_map[new_cell_id] = cell_id_on_tile
+                    all_cells_data.append(cell_info)
+        
+        masks_dict[(tile['y'], tile['x'])] = {'mask': masks, 'cell_map': current_cell_map}
+
+    df = pd.DataFrame(all_cells_data) if all_cells_data else pd.DataFrame()
+    initial_cell_count = len(df)
+
+    tasks[task_id]['status'] = 'Filtering results...'; tasks[task_id]['progress'] = 85
+    df_filtered = df.copy()
+    if not df.empty:
+        df_filtered = df[(df['Area_pixels'] >= thresholds['min_area']) & (df['Area_pixels'] <= thresholds['max_area'])]
+        intensity_col = f'Mean_Intensity_{seg_channel_name}'
+        if intensity_col in df_filtered:
+            df_filtered = df_filtered[(df_filtered[intensity_col] >= thresholds['min_intensity']) & (df_filtered[intensity_col] <= thresholds['max_intensity'])]
+    final_cell_count = len(df_filtered)
+
+    tasks[task_id]['status'] = 'Generating results...'; tasks[task_id]['progress'] = 90
+    channel_order = list(channels.keys())
+    intensity_data = {ch: df_filtered[f'Mean_Intensity_{ch}'].tolist() for ch in channel_order} if not df_filtered.empty else {ch: [] for ch in channel_order}
+    
+    reconstructed_image_bytes = reconstruct_image(channels, seg_channel_name, df_filtered, masks_dict, tile_metadata)
+
+    plots_data = {
+        'reconstruction': reconstructed_image_bytes,
+        'cell_count': create_cell_count_plot(initial_cell_count, final_cell_count).getvalue(),
+        'area_histogram': create_area_histogram(df_filtered).getvalue(),
+        'histogram': create_histogram(intensity_data, channel_order).getvalue(),
+        'boxplot': create_boxplot(intensity_data, channel_order).getvalue()
+    }
+    
+    tasks[task_id]['data'] = df_filtered
+    tasks[task_id]['plots_data'] = plots_data
+    tasks[task_id]['result'] = {'plot_names': list(plots_data.keys()), 'barChartData': {}}
+    tasks[task_id]['status'] = 'Complete'; tasks[task_id]['progress'] = 100
+
+def run_comparison_mode(task_id, channels, tile_metadata, thresholds):
+    channel_results, model = {}, Cellpose(model_type='cyto', gpu=True)
+    for i, (ch_name, ch_tiles) in enumerate(channels.items()):
+        tasks[task_id]['status'] = f'Analyzing channel {i+1}/{len(channels)}: {ch_name}...'; tasks[task_id]['progress'] = 10 + int(80 * (i / len(channels)))
+        
+        all_cells_data = []
+        for tile in ch_tiles:
+            img_raw = cv2.imdecode(np.frombuffer(tile['data'], np.uint8), cv2.IMREAD_GRAYSCALE)
+            masks, _, _, _ = model.eval(img_raw, diameter=None, channels=[0,0])
+            for cell_id_on_tile in np.unique(masks)[1:]:
+                cell_mask = (masks == cell_id_on_tile)
+                M = cv2.moments(cell_mask.astype(np.uint8))
+                if M["m00"] > 0:
+                    local_cx, local_cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+                    o = tile_metadata.get('overlap', 0)
+                    if not (tile['x'] > 0 and local_cx < o) and not (tile['y'] > 0 and local_cy < o):
+                        all_cells_data.append({'Area_pixels': int(np.sum(cell_mask)), f'Mean_Intensity_{ch_name}': float(np.mean(img_raw[cell_mask]))})
+
+        df = pd.DataFrame(all_cells_data) if all_cells_data else pd.DataFrame()
+        df_filtered = df.copy()
+        if not df.empty:
+            df_filtered = df[(df['Area_pixels'] >= thresholds['min_area']) & (df['Area_pixels'] <= thresholds['max_area'])]
+            intensity_col = f'Mean_Intensity_{ch_name}'
+            if intensity_col in df_filtered:
+                df_filtered = df_filtered[(df_filtered[intensity_col] >= thresholds['min_intensity']) & (df_filtered[intensity_col] <= thresholds['max_intensity'])]
+        
+        channel_results[ch_name] = {'count': len(df_filtered), 'df': df_filtered}
+
+    tasks[task_id]['status'] = 'Creating final plots...'; tasks[task_id]['progress'] = 95
+    final_df_list = []
+    for ch_name, res in channel_results.items():
+        res['df']['Channel'] = ch_name
+        final_df_list.append(res['df'])
+    final_df = pd.concat(final_df_list, ignore_index=True) if final_df_list else pd.DataFrame()
+
+    plots_data = {'channel_comparison': create_channel_comparison_plot(channel_results).getvalue()}
+    
+    tasks[task_id]['status'] = 'Complete'; tasks[task_id]['progress'] = 100
+    tasks[task_id]['result'] = {'plot_names': list(plots_data.keys()), 'barChartData': {}}
+    tasks[task_id]['data'] = final_df
+    tasks[task_id]['plots_data'] = plots_data
+
+def process_analysis_request(task_id, files_with_paths, thresholds, bg_coords, comp_matrix):
     try:
-        tasks[task_id]['status'] = 'Grouping tiles and parsing metadata...'; tasks[task_id]['progress'] = 5
+        tasks[task_id]['status'] = 'Grouping tiles...'; tasks[task_id]['progress'] = 5
         channels, tile_metadata = {}, {}
         coord_pattern = re.compile(r'tile_y(\d+)_x(\d+)\.png')
-
-        for path, file_storage_tuple in files_with_paths.items():
-            path_parts = path.split('/')
+        for path, file_data in files_with_paths.items():
+            path_parts = path.split('/');
             if len(path_parts) < 2: continue
             channel_name, filename = path_parts[-2], path_parts[-1]
             if channel_name not in channels: channels[channel_name] = []
-            
             match = coord_pattern.search(filename)
             if not match: continue
-
-            tile_info = {'data': file_storage_tuple, 'y': int(match.group(1)), 'x': int(match.group(2))}
+            tile_info = {'data': file_data, 'y': int(match.group(1)), 'x': int(match.group(2))}
             channels[channel_name].append(tile_info)
             if 'tile_size' not in tile_metadata:
                 temp_img = cv2.imdecode(np.frombuffer(tile_info['data'], np.uint8), cv2.IMREAD_GRAYSCALE)
                 if temp_img is not None:
-                    tile_metadata['tile_size'] = temp_img.shape[0]
-                    tile_metadata['overlap'] = tile_metadata['tile_size'] // 5
-
-        seg_channel_name = thresholds['seg_channel']
-        if seg_channel_name not in channels: raise ValueError(f"Segmentation channel '{seg_channel_name}' not found.")
+                    tile_metadata['tile_size'] = temp_img.shape[0]; tile_metadata['overlap'] = temp_img.shape[0] // 5
         
-        all_cells_data, model = [], Cellpose(model_type='cyto', gpu=True)
-        total_tiles = len(channels[seg_channel_name])
-        
-        for i, tile in enumerate(sorted(channels[seg_channel_name], key=lambda t: (t['y'], t['x']))):
-            tasks[task_id]['status'] = f'Analyzing tile {i+1}/{total_tiles}...'; tasks[task_id]['progress'] = 10 + int(70 * (i / total_tiles))
-            
-            seg_image_raw = cv2.imdecode(np.frombuffer(tile['data'], np.uint8), cv2.IMREAD_GRAYSCALE)
-            masks, _, _, _ = model.eval(seg_image_raw, diameter=None, channels=[0,0])
-            
-            for cell_id in np.unique(masks)[1:]:
-                cell_mask = (masks == cell_id)
-                M = cv2.moments(cell_mask.astype(np.uint8))
-                if M["m00"] > 0:
-                    local_cx, local_cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
-                    
-                    o = tile_metadata.get('overlap', 0); ts = tile_metadata.get('tile_size', 512)
-                    core_x_start = o if tile['x'] > 0 else 0
-                    core_y_start = o if tile['y'] > 0 else 0
-                    
-                    if not (local_cx < core_x_start or local_cy < core_y_start):
-                        cell_info = {'Global_CX': tile['x'] + local_cx, 'Global_CY': tile['y'] + local_cy, 'Area_pixels': int(np.sum(cell_mask))}
-                        for ch_name, ch_tiles in channels.items():
-                            corr_tile_data = next((t['data'] for t in ch_tiles if t['x'] == tile['x'] and t['y'] == tile['y']), None)
-                            if corr_tile_data:
-                                ch_img = cv2.imdecode(np.frombuffer(corr_tile_data, np.uint8), cv2.IMREAD_GRAYSCALE)
-                                cell_info[f'Mean_Intensity_{ch_name}'] = float(np.mean(ch_img[ch_img > 0]))
-                        all_cells_data.append(cell_info)
-
-        df = pd.DataFrame(all_cells_data) if all_cells_data else pd.DataFrame()
-        initial_cell_count = len(df)
-        if not df.empty:
-            df.reset_index(drop=True, inplace=True); df['Cell_ID'] = df.index + 1
-
-        tasks[task_id]['status'] = 'Filtering results...'; tasks[task_id]['progress'] = 85
-        df_filtered = df
-        if not df.empty:
-            df_filtered = df[(df['Area_pixels'] >= thresholds['min_area']) & (df['Area_pixels'] <= thresholds['max_area'])]
-            intensity_col = f'Mean_Intensity_{seg_channel_name}'
-            if intensity_col in df_filtered:
-                df_filtered = df_filtered[(df_filtered[intensity_col] >= thresholds['min_intensity']) & (df_filtered[intensity_col] <= thresholds['max_intensity'])]
-        
-        final_cell_count = len(df_filtered)
-        
-        tasks[task_id]['status'] = 'Creating plots...'; tasks[task_id]['progress'] = 90
-        channel_order = list(channels.keys())
-        intensity_data = {ch: df_filtered[f'Mean_Intensity_{ch}'].tolist() for ch in channel_order} if not df_filtered.empty else {ch: [] for ch in channel_order}
-        
-        plots_data = {
-            'histogram': create_histogram(intensity_data, channel_order).getvalue(),
-            'boxplot': create_boxplot(intensity_data, channel_order).getvalue(),
-            'area_histogram': create_area_histogram(df_filtered).getvalue(),
-            'cell_count': create_cell_count_plot(initial_cell_count, final_cell_count).getvalue()
-        }
-        
-        encoded_img = ""
-        bar_chart_data = {'labels': df_filtered['Cell_ID'].tolist(), 'datasets': []} if not df_filtered.empty else {'labels': [], 'datasets': []}
-        if not df_filtered.empty:
-            colors = ['rgba(255, 99, 132, 0.8)', 'rgba(54, 162, 235, 0.8)', 'rgba(75, 192, 192, 0.8)', 'rgba(255, 206, 86, 0.8)']
-            for i, name in enumerate(channel_order):
-                bar_chart_data['datasets'].append({'label': f'{name} Intensity', 'data': df_filtered[f'Mean_Intensity_{name}'].tolist(), 'backgroundColor': colors[i % len(colors)]})
-
-        tasks[task_id]['status'] = 'Complete'; tasks[task_id]['progress'] = 100
-        tasks[task_id]['result'] = {'imageData': encoded_img, 'barChartData': bar_chart_data}
-        tasks[task_id]['data'] = df_filtered
-        tasks[task_id]['plots_data'] = plots_data
-
+        if thresholds['analysis_mode'] == 'quantify':
+            run_quantification_mode(task_id, channels, tile_metadata, thresholds, bg_coords, comp_matrix)
+        elif thresholds['analysis_mode'] == 'compare':
+            run_comparison_mode(task_id, channels, tile_metadata, thresholds)
+        else:
+            raise ValueError("Invalid analysis mode selected.")
     except Exception as e:
-        tasks[task_id]['status'] = 'Error'; tasks[task_id]['error'] = str(e)
-        traceback.print_exc()
+        tasks[task_id]['status'] = 'Error'; tasks[task_id]['error'] = str(e); traceback.print_exc()
 
 @app.route('/')
 def index(): return render_template('index.html')
@@ -199,11 +291,15 @@ def analyze():
     tasks[task_id] = {'status': 'Pending...', 'progress': 0}
     files_with_paths = {file.filename: file.read() for file in request.files.getlist('images')}
     thresholds = {
-        'seg_channel': request.form['segChannel'],
+        'analysis_mode': request.form['analysisMode'], 'seg_channel': request.form.get('segChannel'),
         'min_area': float(request.form.get('minArea', 0)), 'max_area': float(request.form.get('maxArea', 1e9)),
         'min_intensity': float(request.form.get('minIntensity', 0)), 'max_intensity': float(request.form.get('maxIntensity', 1e9))
     }
-    thread = Thread(target=process_analysis_request, args=(task_id, files_with_paths, thresholds))
+    bg_coords = {'x1': int(float(request.form.get('bgX1',0))), 'y1': int(float(request.form.get('bgY1',0))),
+                 'x2': int(float(request.form.get('bgX2',0))), 'y2': int(float(request.form.get('bgY2',0)))}
+    comp_matrix = np.identity(len(files_with_paths))
+    
+    thread = Thread(target=process_analysis_request, args=(task_id, files_with_paths, thresholds, bg_coords, comp_matrix))
     thread.daemon = True
     thread.start()
     return jsonify({'success': True, 'task_id': task_id})
